@@ -117,7 +117,7 @@ import java.nio.ByteBuffer;
       byteCount = Math.min(byteCount, TEMP_BUFFER_SIZE);
       int read = readFromExtractorInput(0, byteCount);
       if (read < 4) {
-        // Reading less than 4 bytes, most of the time, happens because of getting the bytes left in
+        //  less than 4 bytes, most of the time, happens because of getting the bytes left in
         // the buffer of the input. Do another read to reduce the number of calls to this method
         // from the native code.
         read += readFromExtractorInput(read, byteCount - read);

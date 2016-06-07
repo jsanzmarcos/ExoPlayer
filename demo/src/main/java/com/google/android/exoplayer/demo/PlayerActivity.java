@@ -383,11 +383,22 @@ public class PlayerActivity extends Activity implements SurfaceHolder.Callback, 
 
   // DemoPlayer.Listener implementation
 
+  int previousState = -1;
+  long lastStateUpdate = 0;
   @Override
   public void onStateChanged(boolean playWhenReady, int playbackState) {
     if (playbackState == ExoPlayer.STATE_ENDED) {
       showControls();
     }
+
+    if (previousState==ExoPlayer.STATE_BUFFERING && playbackState==ExoPlayer.STATE_READY) {
+      long dt = System.currentTimeMillis() - lastStateUpdate;
+      Log.i(TAG, "AKZ => From buffering to ready in " + dt + " ms");
+    }
+
+    lastStateUpdate = System.currentTimeMillis();
+    previousState = playbackState;
+
     String text = "playWhenReady=" + playWhenReady + ", playbackState=";
     switch(playbackState) {
       case ExoPlayer.STATE_BUFFERING:

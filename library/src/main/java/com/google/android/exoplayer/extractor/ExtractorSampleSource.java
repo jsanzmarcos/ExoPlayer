@@ -24,6 +24,7 @@ import com.google.android.exoplayer.SampleSource;
 import com.google.android.exoplayer.SampleSource.SampleSourceReader;
 import com.google.android.exoplayer.TrackRenderer;
 import com.google.android.exoplayer.drm.DrmInitData;
+import com.google.android.exoplayer.latency.LatencyParallelDownload;
 import com.google.android.exoplayer.upstream.Allocator;
 import com.google.android.exoplayer.upstream.DataSource;
 import com.google.android.exoplayer.upstream.DataSpec;
@@ -35,6 +36,7 @@ import com.google.android.exoplayer.util.Util;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.SystemClock;
+import android.util.Log;
 import android.util.SparseArray;
 
 import java.io.EOFException;
@@ -781,6 +783,7 @@ public final class ExtractorSampleSource implements SampleSource, SampleSourceRe
    */
   private static class ExtractingLoadable implements Loadable {
 
+    private static final String TAG = "AKZ-EL";
     private final Uri uri;
     private final DataSource dataSource;
     private final ExtractorHolder extractorHolder;
@@ -817,6 +820,7 @@ public final class ExtractorSampleSource implements SampleSource, SampleSourceRe
     @Override
     public void load() throws IOException, InterruptedException {
       int result = Extractor.RESULT_CONTINUE;
+
       while (result == Extractor.RESULT_CONTINUE && !loadCanceled) {
         ExtractorInput input = null;
         try {
@@ -835,6 +839,9 @@ public final class ExtractorSampleSource implements SampleSource, SampleSourceRe
             allocator.blockWhileTotalBytesAllocatedExceeds(requestedBufferSize);
             result = extractor.read(input, positionHolder);
             // TODO: Implement throttling to stop us from buffering data too often.
+            
+      //      Log.i(TAG, "result=" + result + " vs " + requestedBufferSize);
+            
           }
         } finally {
           if (result == Extractor.RESULT_SEEK) {
