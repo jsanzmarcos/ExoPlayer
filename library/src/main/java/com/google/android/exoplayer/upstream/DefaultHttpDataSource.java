@@ -198,7 +198,7 @@ public class DefaultHttpDataSource implements HttpDataSource {
             md5=null;
         }
 
-        Log.i(TAG, "Opening stream at offset " + dataSpec.position + " for " + dataSpec.length + " bytes length");
+        Log.i(TAG, "Opening stream at offset " + dataSpec.position + " for " + dataSpec.length + " bytes length from " + dataSpec.uri.toString());
 
         if (LatencyParallelDownload.getInstance().sameSession(dataSpec.uri.toString())) {
 
