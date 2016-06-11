@@ -16,7 +16,7 @@
 package com.google.android.exoplayer.upstream;
 
 import com.google.android.exoplayer.C;
-import com.google.android.exoplayer.latency.LatencyCache;
+import com.google.android.exoplayer.latency.LatencyBoostSession;
 import com.google.android.exoplayer.latency.LatencyParallelDownload;
 import com.google.android.exoplayer.util.Assertions;
 import com.google.android.exoplayer.util.Predicate;
@@ -36,7 +36,6 @@ import java.net.NoRouteToHostException;
 import java.net.ProtocolException;
 import java.net.URL;
 import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -79,7 +78,6 @@ public class DefaultHttpDataSource implements HttpDataSource {
 
     private DataSpec dataSpec;
     private HttpURLConnection connection;
-    private InputStream inputStream;
     private boolean opened;
 
     private long bytesToSkip;
@@ -87,7 +85,8 @@ public class DefaultHttpDataSource implements HttpDataSource {
 
     private long bytesSkipped;
     private long bytesRead;
-    private int latencyStage;
+//    private int latencyStage;
+    private LatencyBoostSession currentSession;
 
     /**
      * @param userAgent The User-Agent string that should be used.
@@ -198,83 +197,57 @@ public class DefaultHttpDataSource implements HttpDataSource {
             md5=null;
         }
 
-        Log.i(TAG, "Opening stream at offset " + dataSpec.position + " for " + dataSpec.length + " bytes length");
+        Log.i(TAG, "Opening stream at offset " + dataSpec.position + " for " + dataSpec.length + " bytes length from " + dataSpec.uri.toString());
 
-        if (LatencyParallelDownload.getInstance().sameSession(dataSpec.uri.toString())) {
+        currentSession = LatencyParallelDownload.getInstance().findSession(dataSpec.uri.toString());
 
-            bytesToRead = LatencyParallelDownload.getInstance().getContentLength() - dataSpec.position;
-/*
-            if (LatencyParallelDownload.getInstance().getNear().isDownloadComplete()) {
-                Log.i(TAG, "The first part is complete, skipping connecting again. New stage:" + latencyStage + ", bytesToRead:" + bytesToRead);
-            } else {
-                /// assume that all threads have been spawned so far
-            }
-*/
-            latencyStage = LatencyParallelDownload.getInstance().adjustOffset(dataSpec.position);
-            connection = null;
+        if (currentSession.isCached()) {
 
-            if (listener != null) {
-                listener.onTransferStart();
-            }
-
-            opened = true;
-            Log.i(TAG,"bytes to read in the same session:" + bytesToRead + " with latencyStage:" + latencyStage);
-
+            Log.i(TAG,"is cached");
+            currentSession.setPosition(dataSpec.position);
+            currentSession.adjustOffset();
+            disableConnection();
             return bytesToRead;
 
         }
+
 
         initiateConnection(dataSpec);
 
-        long clength = getContentLength(connection);
-        String lv = connection.getHeaderField("X-Akazoo-Latency");
+        currentSession.setContentLength(getContentLength(connection));
+        currentSession.setLatencyHeader(connection.getHeaderField("X-Akazoo-Latency"));
+        currentSession.configure(dataSpec.position);
 
-        if (lv==null || lv.length()==0) {
-            LatencyParallelDownload.getInstance().cancel();
+        Log.i(TAG,"mode:" + currentSession.getMode() + " phase:" + currentSession.getPhase() + " boost:" + currentSession.isBoost());
 
-        } else {
-
-
-            String[] latency  = lv.split(",");
-            long contentLength = Long.parseLong(latency[0]);
-            Log.i(TAG, "Using latency cache:" + contentLength + " at " + latency[1]);
-
-            LatencyParallelDownload.getInstance().initializeFarBuffer(contentLength);
-            LatencyParallelDownload.getInstance().continueDownload(connection);
-            LatencyParallelDownload.getInstance().spawn(latency[1], this, LatencyParallelDownload.getInstance().getFar());
-
-            latencyStage = LatencyParallelDownload.getInstance().adjustOffset(dataSpec.position);
-
-
-            opened = true;
-            bytesToRead = contentLength;
-            if (listener != null) {
-                listener.onTransferStart();
-            }
-
-            try {
-                inputStream = connection.getInputStream();
-            } catch (IOException e) {
-                closeConnectionQuietly();
-                throw new HttpDataSourceException(e, dataSpec, HttpDataSourceException.TYPE_OPEN);
+        switch(currentSession.getMode()) {
+            case NormalExoPlayerDownload:
+                proceedWithNormalDownload(dataSpec);
+                break;
+            case SingleHostDownload:
+                currentSession.continueDownloadInAnotherThread(connection);
+                disableConnection();
+                break;
+            case TwoHostDownload:
+                currentSession.continueDownloadInAnotherThread(connection);
+                currentSession.spawnSecondSegmentDownload(this);
+                disableConnection();
+                break;
             }
 
 
-            inputStream = null;
-            connection = null;
 
-            return bytesToRead;
+        return bytesToRead;
+    }
 
-
-//        LatencyParallelDownload.getInstance().spawn(latency[1], this, contentLength);
-        }
+    private void proceedWithNormalDownload(DataSpec dataSpec) throws HttpDataSourceException {
+        Log.i(TAG, "content length:" + currentSession.getContentLength());
 
 
-        Log.i(TAG,"content length:" + clength);
 
         // Determine the length of the farData to be read, after skipping.
         if ((dataSpec.flags & DataSpec.FLAG_ALLOW_GZIP) == 0) {
-            long contentLength = clength;
+            long contentLength = currentSession.getContentLength();
             bytesToRead = dataSpec.length != C.LENGTH_UNBOUNDED ? dataSpec.length
                     : contentLength != C.LENGTH_UNBOUNDED ? contentLength - bytesToSkip
                     : C.LENGTH_UNBOUNDED;
@@ -289,7 +262,7 @@ public class DefaultHttpDataSource implements HttpDataSource {
         Log.i(TAG,"bytes to read:" + bytesToRead);
 
         try {
-            inputStream = connection.getInputStream();
+            currentSession.setInputStream(connection.getInputStream());
         } catch (IOException e) {
             closeConnectionQuietly();
             throw new HttpDataSourceException(e, dataSpec, HttpDataSourceException.TYPE_OPEN);
@@ -299,8 +272,18 @@ public class DefaultHttpDataSource implements HttpDataSource {
         if (listener != null) {
             listener.onTransferStart();
         }
+    }
 
-        return bytesToRead;
+    private void disableConnection() {
+        connection = null;
+        if (listener != null) {
+            listener.onTransferStart();
+        }
+
+        bytesToRead = currentSession.getContentLength()  - dataSpec.position; // LatencyParallelDownload.getInstance().getContentLength()
+
+        opened = true;
+        Log.i(TAG, "bytes to read in the same session:" + bytesToRead + " with latencyStage:" + currentSession.getStage());
     }
 
     private void initiateConnection(DataSpec dataSpec) throws HttpDataSourceException {
@@ -354,17 +337,17 @@ public class DefaultHttpDataSource implements HttpDataSource {
     public void close() throws HttpDataSourceException {
         try {
 
-            LatencyParallelDownload.getInstance().closeAfterReading((int) bytesRead);
-            if (inputStream != null) {
+            currentSession.close();
+            if (currentSession.getInputStream()!= null) {
                 Util.maybeTerminateInputStream(connection, bytesRemaining());
                 try {
-                    inputStream.close();
+                    currentSession.getInputStream().close();
                 } catch (IOException e) {
                     throw new HttpDataSourceException(e, dataSpec, HttpDataSourceException.TYPE_CLOSE);
                 }
             }
         } finally {
-            inputStream = null;
+            currentSession.setInputStream(null);
             closeConnectionQuietly();
             if (opened) {
                 opened = false;
@@ -661,41 +644,15 @@ public class DefaultHttpDataSource implements HttpDataSource {
         }
         return read;
     }
-    private int readBuffer(byte[] buffer, int offset, int readLength) throws IOException {
 
-        /*
-        if (md5==null) {
-            try {
-                md5 = MessageDigest.getInstance("MD5");
-                md5.reset();
-            } catch (NoSuchAlgorithmException e) {
-                Log.w(TAG, e);
-            }
-        }*/
+    private int readBuffer(byte[] buffer, int offset, int readLength) throws IOException {
 
         int r ;
         try {
 
-       //     int prev = latencyStage;
-            r = readBufferWrap(buffer, offset, readLength);
+            r = currentSession.readBuffer(buffer, offset, readLength);
 
-/*
-            if (md5!=null) {
-                if (r>0) {
-                    for(int i=0;i<r;i++) md5.update(buffer[offset+i]);
-//                    md5.update();
-   //                 md5.update(buffer, offset, r);
-
-                    if (bytesRead<1024*1024) {
-
-                        String hashtext = getMD5Hash();
-                        Log.d(TAG, "BR:" + FL(bytesRead) + " PS:" + prev + " CS:" + latencyStage + " RL:" + FL(readLength) + " R:" + FL(r) + " MD5:" + hashtext);
-                    }
-                }
-            }
-*/
-
-        } catch (InterruptedException e) {
+        } catch (Throwable e) {
             r = -1;
         }
 
@@ -725,51 +682,6 @@ public class DefaultHttpDataSource implements HttpDataSource {
     MessageDigest md5 = null;
 
 
-
-    private int readBufferWrap(byte[] buffer, int offset, int readLength) throws IOException, InterruptedException {
-
-int r;
-
-        switch(latencyStage) {
-
-            case 0:
-                return inputStream.read(buffer, offset, readLength);
-
-            case 1:
-
-
-                r = LatencyParallelDownload.getInstance().getNear().read(buffer, offset, readLength, true);
-
-                if (LatencyParallelDownload.getInstance().getNear().getBytesTransferred() >= LatencyParallelDownload.getInstance().getFirstSegmentSize()) {
-                    Log.i(TAG, "near-remote change 1 ==> 2 (total reached) " + LatencyParallelDownload.getInstance().getNear().getBytesTransferred() + " vs " + LatencyParallelDownload.getInstance().getFirstSegmentSize());
-                    latencyStage = 2;
-                    return r;
-
-                } else if (r == -1 ) {
-                    Log.i(TAG, "latency stage change: 1 ==> 2 (reaching end)");
-                    latencyStage = 2;
-                    return LatencyParallelDownload.getInstance().getFar().read(buffer, offset, readLength, true);
-                } else {
-
-                    return r;
-                }
-
-            case 2:
-                return LatencyParallelDownload.getInstance().getFar().read(buffer, offset, readLength, true);
-
-            case 3: {
-                r = LatencyParallelDownload.getInstance().getNear().read(buffer, offset, readLength, false);
-                if (r == -1) {
-                    Log.i(TAG, "latency stage change: 3 ==> 2");
-                    latencyStage = 2;
-                    return 0;
-                }
-                return r;
-            }
-            default:
-            return -1;
-        }
-    }
 
 
 

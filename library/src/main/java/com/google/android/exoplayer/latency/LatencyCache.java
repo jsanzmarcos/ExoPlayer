@@ -12,6 +12,7 @@ public class LatencyCache {
     private int bytesDownloaded;
     private IOException failed;
     private boolean cancel;
+    private long size;
 
 
     public void setBytesTransferred(int bytesTransferred) {
@@ -23,6 +24,7 @@ public class LatencyCache {
 
     public LatencyCache(int size, String name) {
         this.name = name;
+        this.size = size;
         buffer = new byte[size];
         bytesDownloaded = 0;
         bytesTransferred = 0;
@@ -137,6 +139,14 @@ public class LatencyCache {
 
     public void setCancel(boolean cancel) {
         this.cancel = cancel;
+    }
+
+    public long getSize() {
+        return size;
+    }
+
+    public void setSize(long size) {
+        this.size = size;
     }
 }
 
